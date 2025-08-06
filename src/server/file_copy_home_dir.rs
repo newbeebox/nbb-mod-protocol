@@ -13,22 +13,7 @@ impl CommandTrait for FileCopyToHomeDirCommand {
             let input = mod_dir.join(&item);
             let output = home_dir.join(&item);
 
-            // 如果是文件夹直接跳过
-            if input.is_dir() {
-                continue;
-            }
-
-            // 校验输入文件是否存在
-            if !input.exists() {
-                return Err(anyhow!("文件不存在：{}", input.display()));
-            }
-
-            // 确保输出目录存在
-            if let Some(parent) = output.parent() {
-                fs::create_dir_all(parent).await?;
-            }
-            // 复制文件
-            fs::copy(input, output).await?;
+            utils::copy(&input, &output).await?;
         }
         Ok(())
     }

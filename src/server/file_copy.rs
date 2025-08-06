@@ -30,23 +30,8 @@ impl CommandTrait for FileCopyCommand {
         for item in self.params.iter() {
             let input = mod_dir.join(item.input.clone());
             let output = env_replace(&params.envs, &item.output)?;
-            let output = Path::new(&output);
-
-            // 校验输入文件是否存在
-            if !input.exists() {
-                return Err(anyhow!("文件不存在：{}", input.display()));
-            }
-
-            if input.is_dir() {
-                continue;
-            }
-
-            // 确保输出目录存在
-            if let Some(parent) = output.parent() {
-                fs::create_dir_all(parent).await?;
-            }
-
-            fs::copy(input, output).await?;
+            let output = PathBuf::from(&output);
+            utils::copy(&input, &output).await?;
         }
         Ok(())
     }

@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use std::path::PathBuf;
 use tokio::fs;
 
@@ -17,5 +18,32 @@ pub async fn remove_file_and_folder(path: &PathBuf) -> anyhow::Result<()> {
         }
         break;
     }
+    Ok(())
+}
+
+// 复制文件
+pub async fn copy(input: &PathBuf, output: &PathBuf) -> anyhow::Result<()> {
+    // 校验输入文件是否存在
+    if !input.exists() {
+        return Err(anyhow!("文件不存在：{}", input.display()));
+    }
+
+    if input.is_dir() {
+        return Ok(());
+    }
+
+    // 确保输出目录存在
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+
+    // 如果文件存在
+    if output.exists() {
+        fs::remove_file(output.clone()).await?;
+    }
+
+    // 复制文件
+    fs::copy(input, output).await?;
+
     Ok(())
 }
