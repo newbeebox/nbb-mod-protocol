@@ -34,16 +34,22 @@ pub async fn copy(input: &PathBuf, output: &PathBuf) -> anyhow::Result<()> {
 
     // 确保输出目录存在
     if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent).await?;
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|err| anyhow!("创建文件夹失败:{err:?}"))?;
     }
 
     // 如果文件存在
     if output.exists() {
-        fs::remove_file(output.clone()).await?;
+        fs::remove_file(output.clone())
+            .await
+            .map_err(|err| anyhow!("删除失败:{err:?}"))?;
     }
 
     // 复制文件
-    fs::copy(input, output).await?;
+    fs::copy(input, output)
+        .await
+        .map_err(|err| anyhow!("复制文件失败:{err:?}"))?;
 
     Ok(())
 }
