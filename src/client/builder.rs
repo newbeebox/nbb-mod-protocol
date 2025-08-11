@@ -23,7 +23,7 @@ impl Builder {
                 inner: Vec::new(),
                 file: file_path.to_owned(),
             }),
-            Err(e) => Err(anyhow!(e)),
+            Err(e) => Err(anyhow!("读取安装配置失败：{e:?}")),
         }
     }
     pub async fn save(&self) -> anyhow::Result<()> {
