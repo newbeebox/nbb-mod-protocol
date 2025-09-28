@@ -8,11 +8,7 @@ use tokio::fs;
 
 
 impl Command {
-    pub async fn execute(&self, args: CommandExecuteParams) -> anyhow::Result<()> {
-        self.execute_with_progress(args, None).await
-    }
-
-    pub async fn execute_with_progress(&self, args: CommandExecuteParams, progress: ProgressCallbackOption) -> anyhow::Result<()> {
+    pub async fn execute(&self, args: CommandExecuteParams, progress: ProgressCallbackOption) -> anyhow::Result<()> {
         match self {
             Command::LauncherArg(cmd) => cmd.execute(args, progress).await,
             Command::CopyFile(cmd) => cmd.execute(args, progress).await,
@@ -76,7 +72,7 @@ pub async fn install(dto: CommandParams, progress_callback: Option<InstallProgre
         // 其他命令 - 传递进度回调给命令执行器
         let cmd_params = dto_clone.clone().as_cmd_exec_params(CommandType::Install);
 
-        // 对于非启动参数命令，使用带进度回调的执行方式
+        // 对于非启动参数命令，传递进度回调给命令执行器
         if let Some(ref callback) = progress_callback {
             // 创建子进度回调，将命令内部进度映射到总体进度区间
             let callback_clone = callback.clone();
@@ -84,9 +80,9 @@ pub async fn install(dto: CommandParams, progress_callback: Option<InstallProgre
                 let mapped_progress = base_progress + ((sub_progress as u32 * (next_progress - base_progress) as u32 / 100) as u8);
                 callback_clone(mapped_progress, msg);
             });
-            command.execute_with_progress(cmd_params, Some(sub_callback)).await?;
+            command.execute(cmd_params, Some(sub_callback)).await?;
         } else {
-            command.execute(cmd_params).await?;
+            command.execute(cmd_params, None).await?;
         }
 
         // 报告命令完成
@@ -133,7 +129,7 @@ pub async fn remove(
 
         let cmd_params = dto_clone.clone().as_cmd_exec_params(CommandType::UnInstall);
 
-        // 使用带进度回调的执行方式
+        // 传递进度回调给命令执行器
         if let Some(ref callback) = progress_callback {
             // 创建子进度回调，将命令内部进度映射到总体进度区间
             let callback_clone = callback.clone();
@@ -141,9 +137,9 @@ pub async fn remove(
                 let mapped_progress = base_progress + ((sub_progress as u32 * (next_progress - base_progress) as u32 / 100) as u8);
                 callback_clone(mapped_progress, msg);
             });
-            command.execute_with_progress(cmd_params, Some(sub_callback)).await?;
+            command.execute(cmd_params, Some(sub_callback)).await?;
         } else {
-            command.execute(cmd_params).await?;
+            command.execute(cmd_params, None).await?;
         }
 
         // 报告命令完成
