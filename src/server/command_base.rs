@@ -88,17 +88,27 @@ impl CommandParams {
     }
 }
 
+/// 进度回调函数类型
+/// - progress: 进度百分比（0-100）
+/// - message: 当前操作描述
+pub type ProgressCallback = Box<dyn Fn(u8, &str) + Send + Sync>;
+
+/// 可选的进度回调
+pub type ProgressCallbackOption = Option<ProgressCallback>;
+
 /// 命令必须实现的方法
 pub trait CommandTrait {
-    /// 安装
-    async fn install(&self, params: CommandParams) -> anyhow::Result<()>;
-    /// 卸载
-    async fn remove(&self, params: CommandParams) -> anyhow::Result<()>;
-    /// 执行安装|卸载
-    async fn execute(&self, params: CommandExecuteParams) -> anyhow::Result<()> {
+    /// 安装（可选进度回调）
+    async fn install(&self, params: CommandParams, progress: ProgressCallbackOption) -> anyhow::Result<()>;
+
+    /// 卸载（可选进度回调）
+    async fn remove(&self, params: CommandParams, progress: ProgressCallbackOption) -> anyhow::Result<()>;
+
+    /// 执行安装|卸载（可选进度回调）
+    async fn execute(&self, params: CommandExecuteParams, progress: ProgressCallbackOption) -> anyhow::Result<()> {
         match params.cmd_type {
-            CommandType::Install => self.install(params.into()).await,
-            CommandType::UnInstall => self.remove(params.into()).await,
+            CommandType::Install => self.install(params.into(), progress).await,
+            CommandType::UnInstall => self.remove(params.into(), progress).await,
         }
     }
 }
