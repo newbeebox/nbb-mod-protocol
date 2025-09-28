@@ -41,16 +41,20 @@ impl CommandTrait for FileCopyToHomeDirCommand {
 
     async fn remove(&self, params: CommandParams, progress: ProgressCallbackOption) -> anyhow::Result<()> {
         let home_dir = params.get_home_dir()?;
-        let mod_dir = params.get_mod_dir()?;
 
-        // 使用工具函数收集所有可能需要删除的文件
-        let all_files = utils::collect_files_with_mapping(&self.params, &mod_dir, &home_dir)?;
-
-        // 过滤出实际存在的文件
+        // 直接根据协议中的路径参数，在用户目录中查找要删除的文件
         let mut files_to_remove = Vec::new();
-        for (_, target) in all_files {
-            if target.exists() && !target.is_dir() {
-                files_to_remove.push(target);
+        for path_str in &self.params {
+            let target_path = home_dir.join(path_str);
+
+            // 收集目标位置的所有文件
+            if target_path.exists() {
+                let files = utils::collect_files(&target_path, None)?;
+                for (file, _) in files {
+                    if file.exists() && !file.is_dir() {
+                        files_to_remove.push(file);
+                    }
+                }
             }
         }
 

@@ -40,7 +40,7 @@ mod test {
     #[tokio::test]
     async fn test_remove() {
         use std::sync::Arc;
-        let dto = CommandParams::from("g:/games/test", Some(MOD_DIR.to_owned()));
+        let dto = CommandParams::from("g:/games/test", None);
         let config = format!("{}\\install.json", MOD_DIR);
         let progress_callback = Arc::new(|progress: u8, message: &str| {
             eprintln!("卸载进度: {}% - {}", progress, message);

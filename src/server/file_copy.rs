@@ -79,32 +79,30 @@ impl CommandTrait for FileCopyCommand {
     }
 
     async fn remove(&self, params: CommandParams, progress: ProgressCallbackOption) -> anyhow::Result<()> {
-        let mod_dir = params.get_mod_dir()?;
-
-        // 收集所有可能需要删除的文件
+        // 收集所有需要删除的文件，直接从协议中的 output 路径删除
         let mut files_to_remove = Vec::new();
         for item in self.params.iter() {
-            let source_path = mod_dir.join(&item.input);
             let target_path = env_replace(&params.envs, &item.output)?;
             let target_path = PathBuf::from(target_path);
 
-            // 使用工具函数收集源文件列表，然后检查对应的目标文件
-            let files = utils::collect_files(&source_path, Some(&mod_dir))?;
-            for (source, _relative) in files {
-                // 计算对应的目标文件路径
-                let target = if let Ok(rel) = source.strip_prefix(&source_path) {
-                    if rel.as_os_str().is_empty() {
-                        target_path.clone()
-                    } else {
-                        target_path.join(rel)
-                    }
-                } else {
-                    target_path.clone()
-                };
+            // 判断 input 是文件还是目录（通过是否有扩展名简单判断）
+            let input_path = Path::new(&item.input);
+            let is_likely_file = input_path.extension().is_some();
 
-                // 只删除实际存在的文件
-                if target.exists() && !target.is_dir() {
-                    files_to_remove.push(target);
+            if is_likely_file {
+                // 如果 input 看起来是文件，则 output 也应该是文件
+                if target_path.exists() && !target_path.is_dir() {
+                    files_to_remove.push(target_path);
+                }
+            } else {
+                // 如果 input 是目录，则收集 output 目录下的所有文件
+                if target_path.exists() {
+                    let files = utils::collect_files(&target_path, None)?;
+                    for (file, _) in files {
+                        if file.exists() && !file.is_dir() {
+                            files_to_remove.push(file);
+                        }
+                    }
                 }
             }
         }
