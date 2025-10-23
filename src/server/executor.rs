@@ -8,24 +8,25 @@ use tokio::fs;
 
 
 impl Command {
-    pub async fn execute(&self, args: CommandExecuteParams, progress: ProgressCallbackOption) -> anyhow::Result<()> {
+    pub async fn execute(&self, args: CommandExecuteParams, progress: ProgressCallbackOption, all_commands: &[Command]) -> anyhow::Result<()> {
         match self {
-            Command::LauncherArg(cmd) => cmd.execute(args, progress).await,
-            Command::CopyFile(cmd) => cmd.execute(args, progress).await,
-            Command::CopyToGameDir(cmd) => cmd.execute(args, progress).await,
-            Command::CopyToHomeDir(cmd) => cmd.execute(args, progress).await,
+            Command::LauncherArg(cmd) => cmd.execute(args, progress, all_commands).await,
+            Command::CopyFile(cmd) => cmd.execute(args, progress, all_commands).await,
+            Command::CopyToGameDir(cmd) => cmd.execute(args, progress, all_commands).await,
+            Command::CopyToHomeDir(cmd) => cmd.execute(args, progress, all_commands).await,
+            Command::RenameSort(cmd) => cmd.execute(args, progress, all_commands).await,
         }
     }
 }
 
 /// 解析配置文件
-async fn parse_command(config_path: &str) -> anyhow::Result<Vec<Command>> {
+async fn parse_command(config_path: &str) -> anyhow::Result<Vec<CommandEntry>> {
     let json_str = fs::read_to_string(config_path).await?;
     if json_str.trim().is_empty() {
         return Err(anyhow::anyhow!("install config is empty:{}", config_path));
     }
-    let commands = serde_json::from_str(&json_str)?;
-    Ok(commands)
+    let entries = serde_json::from_str(&json_str)?;
+    Ok(entries)
 }
 
 /// 安装进度回调函数类型
@@ -38,21 +39,29 @@ pub type InstallProgressCallback = Arc<dyn Fn(u8, &str) + Send + Sync>;
 /// - progress_callback: 可选的进度回调函数
 pub async fn install(dto: CommandParams, progress_callback: Option<InstallProgressCallback>) -> anyhow::Result<Vec<String>> {
     let config_path = dto.get_mod_protocol_file()?;
-    let commands = parse_command(&config_path).await?;
-    let total_commands = commands.len();
+    let entries = parse_command(&config_path).await?;
+
+    // 提取所有命令（供命令执行时访问）
+    let all_commands: Vec<Command> = entries.iter().map(|e| e.command.clone()).collect();
+
+    // 过滤公有命令
+    let public_entries: Vec<&CommandEntry> = entries.iter().filter(|e| e.public).collect();
+    let total_commands = public_entries.len();
+
     let mut args = vec![];
     let dto_clone = dto.clone();
 
-    for (index, command) in commands.into_iter().enumerate() {
+    for (index, entry) in public_entries.iter().enumerate() {
         let base_progress = (index * 100 / total_commands) as u8;
         let next_progress = ((index + 1) * 100 / total_commands) as u8;
 
         // 获取命令描述
-        let command_desc = match &command {
+        let command_desc = match &entry.command {
             Command::LauncherArg(_) => "设置启动参数",
             Command::CopyFile(_) => "复制文件",
             Command::CopyToGameDir(_) => "复制文件到游戏目录",
             Command::CopyToHomeDir(_) => "复制文件到用户目录",
+            Command::RenameSort(_) => "重命名排序文件",
         };
 
         // 报告开始执行命令的进度
@@ -61,7 +70,7 @@ pub async fn install(dto: CommandParams, progress_callback: Option<InstallProgre
         }
 
         // 启动参数
-        if let Command::LauncherArg(cmd) = &command {
+        if let Command::LauncherArg(cmd) = &entry.command {
             args.extend_from_slice(&cmd.params);
             if let Some(ref callback) = progress_callback {
                 callback(next_progress, &format!("完成{}", command_desc));
@@ -80,9 +89,9 @@ pub async fn install(dto: CommandParams, progress_callback: Option<InstallProgre
                 let mapped_progress = base_progress + ((sub_progress as u32 * (next_progress - base_progress) as u32 / 100) as u8);
                 callback_clone(mapped_progress, msg);
             });
-            command.execute(cmd_params, Some(sub_callback)).await?;
+            entry.command.execute(cmd_params, Some(sub_callback), &all_commands).await?;
         } else {
-            command.execute(cmd_params, None).await?;
+            entry.command.execute(cmd_params, None, &all_commands).await?;
         }
 
         // 报告命令完成
@@ -106,20 +115,28 @@ pub async fn remove(
     dto: CommandParams,
     progress_callback: Option<RemoveProgressCallback>,
 ) -> anyhow::Result<()> {
-    let commands = parse_command(config_path).await?;
-    let total_commands = commands.len();
+    let entries = parse_command(config_path).await?;
+
+    // 提取所有命令（供命令执行时访问）
+    let all_commands: Vec<Command> = entries.iter().map(|e| e.command.clone()).collect();
+
+    // 过滤公有命令
+    let public_entries: Vec<&CommandEntry> = entries.iter().filter(|e| e.public).collect();
+    let total_commands = public_entries.len();
+
     let dto_clone = dto.clone();
 
-    for (index, command) in commands.into_iter().enumerate() {
+    for (index, entry) in public_entries.iter().enumerate() {
         let base_progress = (index * 100 / total_commands) as u8;
         let next_progress = ((index + 1) * 100 / total_commands) as u8;
 
         // 获取命令描述
-        let command_desc = match &command {
+        let command_desc = match &entry.command {
             Command::LauncherArg(_) => "清除启动参数",
             Command::CopyFile(_) => "删除文件",
             Command::CopyToGameDir(_) => "从游戏目录删除文件",
             Command::CopyToHomeDir(_) => "从用户目录删除文件",
+            Command::RenameSort(_) => "重命名排序文件",
         };
 
         // 报告开始执行命令的进度
@@ -137,9 +154,9 @@ pub async fn remove(
                 let mapped_progress = base_progress + ((sub_progress as u32 * (next_progress - base_progress) as u32 / 100) as u8);
                 callback_clone(mapped_progress, msg);
             });
-            command.execute(cmd_params, Some(sub_callback)).await?;
+            entry.command.execute(cmd_params, Some(sub_callback), &all_commands).await?;
         } else {
-            command.execute(cmd_params, None).await?;
+            entry.command.execute(cmd_params, None, &all_commands).await?;
         }
 
         // 报告命令完成

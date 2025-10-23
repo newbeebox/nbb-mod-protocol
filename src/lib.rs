@@ -15,15 +15,7 @@ mod test {
     use super::*;
     use std::io::{self, Write};
 
-    const MOD_DIR: &str = r#"G:\NewBeeBoxCache\NewBeeBoxCache\nbCoreDownload\test"#;
-
-    #[tokio::test]
-    async fn test_builder() {
-        let mut builder = Builder::from("g:\\12201-32\\install.json").await.unwrap();
-        builder.copy_to_game_dir("g:/12201-32").unwrap();
-        builder.launcher_arg(vec!["test".to_owned()]).unwrap();
-        builder.save().await.unwrap();
-    }
+    const MOD_DIR: &str = r#"G:\NewBeeBoxCache\NewBeeBoxCache\nbCoreDownload\test"#;  
 
     // cargo test test_install -- --nocapture
     #[tokio::test]

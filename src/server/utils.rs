@@ -1,7 +1,36 @@
+use crate::proto::{Command, ModEnvKey, ModEnvMap};
 use anyhow::anyhow;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use walkdir::WalkDir;
+
+/// 文件映射信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileMappingInfo {
+    /// 重命名后的文件名
+    pub new_name: String,
+    /// 文件内容 SHA256 哈希值
+    pub hash: String,
+}
+
+/// 替换环境变量
+pub fn env_replace(env: &ModEnvMap, input: &str) -> anyhow::Result<String> {
+    let regex = Regex::new(r"\{\{(\w+)}}")?;
+
+    let path = regex
+        .replace_all(input, |caps: &regex::Captures| {
+            let key = &caps[1];
+            env.get(ModEnvKey::from(key))
+                .cloned()
+                .unwrap_or_else(|| caps[0].to_string())
+        })
+        .to_string();
+    Ok(path)
+}
 
 /// 删除文件和文件夹（如果为空文件夹）
 pub async fn remove_file_and_folder(path: &PathBuf) -> anyhow::Result<()> {
@@ -107,4 +136,58 @@ pub fn collect_files_with_mapping(
     }
 
     Ok(all_files)
+}
+
+/// 计算文件 SHA256 哈希值
+pub async fn calculate_file_hash(file_path: &Path) -> anyhow::Result<String> {
+    let content = fs::read(file_path).await?;
+    let mut hasher = Sha256::new();
+    hasher.update(&content);
+    let result = hasher.finalize();
+    Ok(format!("{:x}", result))
+}
+
+/// 加载重命名映射表
+/// 从指定目录读取 rename_mapping.json
+/// 返回 original_name -> FileMappingInfo 的映射
+pub async fn load_rename_mapping(dir: &Path) -> HashMap<String, FileMappingInfo> {
+    let mapping_file = dir.join("rename_mapping.json");
+
+    if !mapping_file.exists() {
+        return HashMap::new();
+    }
+
+    match fs::read_to_string(&mapping_file).await {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// 应用重命名映射（查找文件的实际名称）
+/// 给定原始文件名，返回可能被重命名后的文件名
+pub fn apply_rename_mapping(file_name: &str, mapping: &HashMap<String, FileMappingInfo>) -> String {
+    mapping
+        .get(file_name)
+        .map(|info| info.new_name.clone())
+        .unwrap_or_else(|| file_name.to_string())
+}
+
+/// 从命令列表中加载所有 RenameSort 的映射表
+/// 遍历 all_commands，找到所有 RenameSort 命令，加载其映射表并合并
+pub async fn load_rename_mappings_from_commands(
+    all_commands: &[Command],
+    envs: &ModEnvMap,
+) -> HashMap<String, FileMappingInfo> {
+    let mut rename_mapping = HashMap::new();
+
+    for command in all_commands {
+        if let Command::RenameSort(rename_cmd) = command {
+            if let Ok(dir) = env_replace(envs, &rename_cmd.params.dir) {
+                let mapping = load_rename_mapping(Path::new(&dir)).await;
+                rename_mapping.extend(mapping);
+            }
+        }
+    }
+
+    rename_mapping
 }

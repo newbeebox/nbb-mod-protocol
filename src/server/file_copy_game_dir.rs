@@ -7,7 +7,7 @@ use anyhow::anyhow;
 use tokio::fs;
 
 impl CommandTrait for FileCopyToGameDirCommand {
-    async fn install(&self, params: CommandParams, progress: ProgressCallbackOption) -> anyhow::Result<()> {
+    async fn install(&self, params: CommandParams, progress: ProgressCallbackOption, _all_commands: &[Command]) -> anyhow::Result<()> {
         let game_dir = params.get_game_dir()?;
         let mod_dir = params.get_mod_dir()?;
 
@@ -42,13 +42,26 @@ impl CommandTrait for FileCopyToGameDirCommand {
         Ok(())
     }
 
-    async fn remove(&self, params: CommandParams, progress: ProgressCallbackOption) -> anyhow::Result<()> {
+    async fn remove(&self, params: CommandParams, progress: ProgressCallbackOption, all_commands: &[Command]) -> anyhow::Result<()> {
         let game_dir = params.get_game_dir()?;
+
+        // 🔥 从 all_commands 中查找 RenameSort 命令，加载映射表
+        let rename_mapping = utils::load_rename_mappings_from_commands(all_commands, &params.envs).await;
 
         // 直接根据协议中的路径参数，在游戏目录中查找要删除的文件
         let mut files_to_remove = Vec::new();
         for path_str in &self.params {
-            let target_path = game_dir.join(path_str);
+            // 🔥 应用重命名映射：如果文件被重命名了，使用新名字
+            let path = std::path::Path::new(path_str);
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path_str);
+            let actual_name = utils::apply_rename_mapping(file_name, &rename_mapping);
+
+            // 保留目录结构 
+            let parent = path.parent().unwrap_or(std::path::Path::new(""));
+            let target_path = game_dir.join(parent).join(&actual_name);
 
             // 收集目标位置的所有文件
             if target_path.exists() {
@@ -60,6 +73,13 @@ impl CommandTrait for FileCopyToGameDirCommand {
                 }
             }
         }
+
+        // 🔥 去重：避免删除同一个文件多次（多个原文件名映射到同一个新文件名）
+        let mut unique_files = std::collections::HashSet::new();
+        let files_to_remove: Vec<_> = files_to_remove
+            .into_iter()
+            .filter(|f| unique_files.insert(f.clone()))
+            .collect();
 
         let total_files = files_to_remove.len();
         if total_files == 0 {

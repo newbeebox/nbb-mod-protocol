@@ -99,16 +99,16 @@ pub type ProgressCallbackOption = Option<ProgressCallback>;
 /// 命令必须实现的方法
 pub trait CommandTrait {
     /// 安装（可选进度回调）
-    async fn install(&self, params: CommandParams, progress: ProgressCallbackOption) -> anyhow::Result<()>;
+    async fn install(&self, params: CommandParams, progress: ProgressCallbackOption, all_commands: &[Command]) -> anyhow::Result<()>;
 
     /// 卸载（可选进度回调）
-    async fn remove(&self, params: CommandParams, progress: ProgressCallbackOption) -> anyhow::Result<()>;
+    async fn remove(&self, params: CommandParams, progress: ProgressCallbackOption, all_commands: &[Command]) -> anyhow::Result<()>;
 
     /// 执行安装|卸载（可选进度回调）
-    async fn execute(&self, params: CommandExecuteParams, progress: ProgressCallbackOption) -> anyhow::Result<()> {
+    async fn execute(&self, params: CommandExecuteParams, progress: ProgressCallbackOption, all_commands: &[Command]) -> anyhow::Result<()> {
         match params.cmd_type {
-            CommandType::Install => self.install(params.into(), progress).await,
-            CommandType::UnInstall => self.remove(params.into(), progress).await,
+            CommandType::Install => self.install(params.into(), progress, all_commands).await,
+            CommandType::UnInstall => self.remove(params.into(), progress, all_commands).await,
         }
     }
 }
