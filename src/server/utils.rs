@@ -172,22 +172,4 @@ pub fn apply_rename_mapping(file_name: &str, mapping: &HashMap<String, FileMappi
         .unwrap_or_else(|| file_name.to_string())
 }
 
-/// 从命令列表中加载所有 RenameSort 的映射表
-/// 遍历 all_commands，找到所有 RenameSort 命令，加载其映射表并合并
-pub async fn load_rename_mappings_from_commands(
-    all_commands: &[Command],
-    envs: &ModEnvMap,
-) -> HashMap<String, FileMappingInfo> {
-    let mut rename_mapping = HashMap::new();
 
-    for command in all_commands {
-        if let Command::RenameSort(rename_cmd) = command {
-            if let Ok(dir) = env_replace(envs, &rename_cmd.params.dir) {
-                let mapping = load_rename_mapping(Path::new(&dir)).await;
-                rename_mapping.extend(mapping);
-            }
-        }
-    }
-
-    rename_mapping
-}

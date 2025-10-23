@@ -39,26 +39,25 @@ impl CommandTrait for FileCopyToHomeDirCommand {
         Ok(())
     }
 
-    async fn remove(&self, params: CommandParams, progress: ProgressCallbackOption, all_commands: &[Command]) -> anyhow::Result<()> {
+    async fn remove(&self, params: CommandParams, progress: ProgressCallbackOption, _all_commands: &[Command]) -> anyhow::Result<()> {
         let home_dir = params.get_home_dir()?;
-
-        // 🔥 从 all_commands 中查找 RenameSort 命令，加载映射表
-        let rename_mapping = utils::load_rename_mappings_from_commands(all_commands, &params.envs).await;
 
         // 直接根据协议中的路径参数，在用户目录中查找要删除的文件
         let mut files_to_remove = Vec::new();
         for path_str in &self.params {
-            // 🔥 应用重命名映射：如果文件被重命名了，使用新名字
             let path = std::path::Path::new(path_str);
-            let file_name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(path_str);
-            let actual_name = utils::apply_rename_mapping(file_name, &rename_mapping);
 
-            // 保留目录结构：path_str = "AppData/.../file.pak" -> parent = "AppData/..."
+            // 构造目标路径
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(path_str);
             let parent = path.parent().unwrap_or(std::path::Path::new(""));
-            let target_path = home_dir.join(parent).join(&actual_name);
+            let target_dir = home_dir.join(parent);
+
+            // 🔥 从目标目录加载映射表（RenameSort 在目标目录生成映射表）
+            let rename_mapping = utils::load_rename_mapping(&target_dir).await;
+
+            // 🔥 应用重命名映射：如果文件被重命名了，使用新名字
+            let actual_name = utils::apply_rename_mapping(file_name, &rename_mapping);
+            let target_path = target_dir.join(&actual_name);
 
             // 收集目标位置的所有文件
             if target_path.exists() {

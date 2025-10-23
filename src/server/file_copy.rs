@@ -62,15 +62,20 @@ impl CommandTrait for FileCopyCommand {
         Ok(())
     }
 
-    async fn remove(&self, params: CommandParams, progress: ProgressCallbackOption, all_commands: &[Command]) -> anyhow::Result<()> {
-        // 🔥 从 all_commands 中查找 RenameSort 命令，加载映射表
-        let rename_mapping = utils::load_rename_mappings_from_commands(all_commands, &params.envs).await;
-
+    async fn remove(&self, params: CommandParams, progress: ProgressCallbackOption, _all_commands: &[Command]) -> anyhow::Result<()> {
         // 收集所有需要删除的文件，直接从协议中的 output 路径删除
         let mut files_to_remove = Vec::new();
         for item in self.params.iter() {
             let target_path = utils::env_replace(&params.envs, &item.output)?;
             let target_path = PathBuf::from(target_path);
+
+            // 🔥 从目标文件所在目录加载映射表（RenameSort 在目标目录生成映射表）
+            let search_dir = if target_path.is_dir() {
+                target_path.clone()
+            } else {
+                target_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+            };
+            let rename_mapping = utils::load_rename_mapping(&search_dir).await;
 
             // 🔥 应用重命名映射：替换路径中的文件名
             let file_name = target_path
