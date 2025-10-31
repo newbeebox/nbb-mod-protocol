@@ -19,6 +19,8 @@ pub struct CommandExecuteParams {
     pub envs: ModEnvMap,
     /// 模组根路径
     pub mod_dir: Option<String>,
+    /// 模组ID（协议文件SHA256），可选（卸载时从外部提供）
+    pub mod_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -27,6 +29,8 @@ pub struct CommandParams {
     pub envs: ModEnvMap,
     /// 模组根路径
     pub mod_dir: Option<String>,
+    /// 模组ID（协议文件SHA256），可选（卸载时从外部提供）
+    pub mod_id: Option<String>,
 }
 
 impl Into<CommandParams> for CommandExecuteParams {
@@ -34,6 +38,7 @@ impl Into<CommandParams> for CommandExecuteParams {
         CommandParams {
             envs: self.envs.clone(),
             mod_dir: self.mod_dir.clone(),
+            mod_id: self.mod_id.clone(),
         }
     }
 }
@@ -43,6 +48,7 @@ impl CommandParams {
         let mut model = Self {
             envs: ModEnvMap::new(),
             mod_dir,
+            mod_id: None,
         };
 
         model
@@ -51,10 +57,17 @@ impl CommandParams {
         model
     }
 
+    /// 设置模组ID（用于卸载时从外部提供）
+    pub fn with_mod_id(mut self, mod_id: String) -> Self {
+        self.mod_id = Some(mod_id);
+        self
+    }
+
     pub fn as_cmd_exec_params(&self, cmd_type: CommandType) -> CommandExecuteParams {
         CommandExecuteParams {
             envs: self.envs.clone(),
             mod_dir: self.mod_dir.clone(),
+            mod_id: self.mod_id.clone(),
             cmd_type,
         }
     }
@@ -86,6 +99,42 @@ impl CommandParams {
         let mod_protocol_file = mod_dir.join("install.json").display().to_string();
         Ok(mod_protocol_file)
     }
+
+    /// 获取模组ID（协议文件的SHA256哈希）
+    /// 优先返回已设置的 mod_id，否则从协议文件计算
+    pub async fn get_mod_id(&self) -> anyhow::Result<String> {
+        // 如果已经设置了 mod_id，直接返回
+        if let Some(ref mod_id) = self.mod_id {
+            return Ok(mod_id.clone());
+        }
+
+        // 否则从协议文件计算
+        use tokio::fs;
+        use sha2::{Sha256, Digest};
+
+        let protocol_file = self.get_mod_protocol_file()?;
+        let content = fs::read_to_string(&protocol_file).await
+            .with_context(|| anyhow!("无法读取协议文件: {}", protocol_file))?;
+
+        let mut hasher = Sha256::new();
+        hasher.update(content.as_bytes());
+        let result = hasher.finalize();
+        Ok(format!("{:x}", result))
+    }
+}
+
+/// 从协议文件路径计算模组ID
+pub async fn calculate_mod_id_from_file(file_path: &str) -> anyhow::Result<String> {
+    use tokio::fs;
+    use sha2::{Sha256, Digest};
+
+    let content = fs::read_to_string(file_path).await
+        .with_context(|| anyhow!("无法读取协议文件: {}", file_path))?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    let result = hasher.finalize();
+    Ok(format!("{:x}", result))
 }
 
 /// 进度回调函数类型

@@ -1,6 +1,6 @@
 //！ 命令执行器
 
-use crate::server::command_base::*;
+use crate::server::command_base::{self, *};
 use std::sync::Arc;
 use crate::*;
 use regex::Regex;
@@ -14,7 +14,6 @@ impl Command {
             Command::CopyFile(cmd) => cmd.execute(args, progress, all_commands).await,
             Command::CopyToGameDir(cmd) => cmd.execute(args, progress, all_commands).await,
             Command::CopyToHomeDir(cmd) => cmd.execute(args, progress, all_commands).await,
-            Command::RenameSort(cmd) => cmd.execute(args, progress, all_commands).await,
         }
     }
 }
@@ -61,7 +60,6 @@ pub async fn install(dto: CommandParams, progress_callback: Option<InstallProgre
             Command::CopyFile(_) => "复制文件",
             Command::CopyToGameDir(_) => "复制文件到游戏目录",
             Command::CopyToHomeDir(_) => "复制文件到用户目录",
-            Command::RenameSort(_) => "重命名排序文件",
         };
 
         // 报告开始执行命令的进度
@@ -115,6 +113,12 @@ pub async fn remove(
     dto: CommandParams,
     progress_callback: Option<RemoveProgressCallback>,
 ) -> anyhow::Result<()> {
+    // 从协议文件计算模组ID
+    let mod_id = command_base::calculate_mod_id_from_file(config_path).await?;
+
+    // 设置 mod_id 到 dto
+    let dto = dto.with_mod_id(mod_id);
+
     let entries = parse_command(config_path).await?;
 
     // 提取所有命令（供命令执行时访问）
@@ -136,7 +140,6 @@ pub async fn remove(
             Command::CopyFile(_) => "删除文件",
             Command::CopyToGameDir(_) => "从游戏目录删除文件",
             Command::CopyToHomeDir(_) => "从用户目录删除文件",
-            Command::RenameSort(_) => "重命名排序文件",
         };
 
         // 报告开始执行命令的进度

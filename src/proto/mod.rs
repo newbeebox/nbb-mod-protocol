@@ -7,14 +7,12 @@ mod file_copy;
 mod file_copy_game_dir;
 mod file_copy_home_dir;
 mod launcher_arg;
-mod rename_sort;
 
 pub use env::*;
 pub use file_copy::*;
 pub use file_copy_game_dir::*;
 pub use file_copy_home_dir::*;
 pub use launcher_arg::*;
-pub use rename_sort::*;
 
 /// 命令类型
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -36,9 +34,6 @@ pub enum Command {
     /// 复制文件到系统用户根目录
     #[serde(rename = "copy_to_home_dir")]
     CopyToHomeDir(FileCopyToHomeDirCommand),
-    /// 重命名排序文件
-    #[serde(rename = "rename_sort")]
-    RenameSort(RenameSortCommand),
 }
 
 /// 命令条目（包含可见性控制）
