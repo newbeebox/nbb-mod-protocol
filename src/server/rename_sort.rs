@@ -5,31 +5,58 @@ use crate::server::utils;
 use crate::*;
 use anyhow::{anyhow, Context};
 use glob::glob;
+use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
-/// 扫描并排序文件（仅处理第一层文件）
-fn scan_and_sort(
-    dir: &str,
-    params: &RenameSortParams,
-) -> anyhow::Result<Vec<PathBuf>> {
-    // 构造 glob 模式
-    let pattern = Path::new(dir).join(&params.pattern);
-    let pattern_str = pattern
-        .to_str()
-        .ok_or_else(|| anyhow!("无效的路径: {}", pattern.display()))?;
+/// 文件名解析结果
+#[derive(Debug, Clone)]
+struct FileNameInfo {
+    /// 前缀（如 "9ba626afa44a3aa3.patch"）
+    prefix: String,
+    /// 索引（如 0, 1, 2...）
+    index: Option<usize>,
+    /// 后缀（如 ".stream", ""）
+    suffix: String,
+}
 
-    // 扫描文件，只保留 dir 的直接子文件（第一层）
+/// 解析文件名：提取 prefix_index.suffix 格式
+///
+/// **规范**：只处理包含 `_数字` 的文件，不符合规范的返回 None
+///
+/// 示例：
+/// - "9ba626afa44a3aa3.patch_0" -> Some(prefix="9ba626afa44a3aa3.patch", index=0, suffix="")
+/// - "9ba626afa44a3aa3.patch_0.stream" -> Some(prefix="9ba626afa44a3aa3.patch", index=0, suffix=".stream")
+/// - "myfile.pak" -> None（不包含 `_数字`，不处理）
+fn parse_filename(name: &str) -> Option<FileNameInfo> {
+    let re = Regex::new(r"^(.+?)_(\d+)((?:\.\w+)*)$").unwrap();
+
+    re.captures(name).map(|caps| {
+        FileNameInfo {
+            prefix: caps[1].to_string(),
+            index: caps[2].parse().ok(),
+            suffix: caps.get(3).map_or(String::new(), |m| m.as_str().to_string()),
+        }
+    })
+}
+
+/// 扫描所有文件（排除映射表文件）
+fn scan_files(dir: &str) -> anyhow::Result<Vec<PathBuf>> {
     let dir_path = Path::new(dir);
-    let mut files: Vec<PathBuf> = glob(pattern_str)?
-        .filter_map(Result::ok)
-        .filter(|p| p.is_file() && p.parent() == Some(dir_path))
-        .collect();
 
-    if files.is_empty() {
-        return Ok(files);
+    if !dir_path.exists() {
+        return Ok(Vec::new());
     }
+
+    // 扫描所有文件，排除 .rename_mapping
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir_path)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|p| {
+            p.is_file() && p.file_name().and_then(|n| n.to_str()) != Some(".rename_mapping")
+        })
+        .collect();
 
     // 按修改时间排序
     files.sort_by_key(|f| {
@@ -41,179 +68,130 @@ fn scan_and_sort(
     Ok(files)
 }
 
-/// 文件去重信息
-struct FileDeduplication {
-    /// 唯一文件列表（每个 hash 只保留一个）
-    unique_files: Vec<PathBuf>,
-    /// 重复文件列表（需要删除）
-    duplicate_files: Vec<PathBuf>,
-    /// 完整映射表（original_name -> FileMappingInfo）
-    mapping: HashMap<String, utils::FileMappingInfo>,
-    /// 重命名映射表（current_name -> new_name，用于原子性重命名）
-    rename_map: HashMap<String, String>,
+/// 重命名操作
+struct RenameOperation {
+    /// 原文件路径
+    old_path: PathBuf,
+    /// 新文件名
+    new_name: String,
+    /// 文件 hash
+    hash: String,
 }
 
-/// 生成重命名映射（带文件 hash 去重）
-async fn generate_mapping_with_dedup(
+/// 按前缀分组，并生成重命名操作
+async fn group_and_generate_renames(
     dir: &Path,
-    files: &[PathBuf],
-    params: &RenameSortParams,
-    old_mapping: &HashMap<String, utils::FileMappingInfo>,
-) -> anyhow::Result<FileDeduplication> {
-    // 验证格式字符串包含 {index}
-    if !params.format.contains("{index}") {
-        return Err(anyhow!(
-            "格式字符串必须包含 {{index}} 占位符: {}",
-            params.format
-        ));
-    }
-
-    // 第一步：计算所有文件的 hash，按 hash 分组
-    let mut hash_groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    files: Vec<PathBuf>,
+    progress: &ProgressCallbackOption,
+) -> anyhow::Result<(Vec<RenameOperation>, Vec<PathBuf>)> {
+    // 第一步：按 (prefix, suffix) 分组，只处理符合规范的文件
+    let mut prefix_groups: HashMap<(String, String), Vec<PathBuf>> = HashMap::new();
+    let mut skipped_files = 0;
 
     for file in files {
-        let hash = utils::calculate_file_hash(file).await?;
-        hash_groups.entry(hash).or_insert_with(Vec::new).push(file.clone());
-    }
+        let name = file.file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| anyhow!("无效的文件名: {}", file.display()))?;
 
-    // 第二步：为每个 hash 组分配新文件名，记录去重信息
-    let mut unique_files = Vec::new();
-    let mut duplicate_files = Vec::new();
-    let mut mapping = HashMap::new();
-    let mut rename_map = HashMap::new();
-    let mut index_counter = params.index_start;
-
-    for (hash, mut group_files) in hash_groups {
-        // 按修改时间排序（与主排序逻辑一致）
-        group_files.sort_by_key(|f| f.metadata().and_then(|m| m.modified()).ok());
-
-        // 第一个文件保留，其他文件标记为重复
-        let first_file = group_files.first().unwrap();
-        unique_files.push(first_file.clone());
-
-        // 生成新文件名
-        let index_str = format!("{:0width$}", index_counter, width = params.index_padding);
-        let new_name = params.format.replace("{index}", &index_str);
-        index_counter += 1;
-
-        // 通过 hash 从旧映射表查找原始文件名
-        let original_name = old_mapping
-            .iter()
-            .find(|(_, info)| info.hash == hash)
-            .map(|(original, _)| original.clone())
-            .unwrap_or_else(|| {
-                // 首次安装，用第一个文件的当前名作为原始名
-                group_files.first().unwrap()
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .to_string()
-            });
-
-        // 保存映射表（original_name -> FileMappingInfo）
-        mapping.insert(
-            original_name,
-            utils::FileMappingInfo {
-                new_name: new_name.clone(),
-                hash: hash.clone(),
-            },
-        );
-
-        // 保存重命名映射表（current_name -> new_name）
-        let current_name = first_file
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-        rename_map.insert(current_name, new_name);
-
-        // 标记重复文件
-        if group_files.len() > 1 {
-            duplicate_files.extend(group_files.into_iter().skip(1));
+        // 只处理包含 _数字 的文件
+        if let Some(info) = parse_filename(name) {
+            let key = (info.prefix, info.suffix);
+            prefix_groups.entry(key).or_insert_with(Vec::new).push(file);
+        } else {
+            skipped_files += 1;
         }
     }
 
-    Ok(FileDeduplication {
-        unique_files,
-        duplicate_files,
-        mapping,
-        rename_map,
-    })
+    if let Some(callback) = progress {
+        if skipped_files > 0 {
+            callback(10, &format!("发现 {} 个前缀组，跳过 {} 个不符合规范的文件", prefix_groups.len(), skipped_files));
+        } else {
+            callback(10, &format!("发现 {} 个前缀组", prefix_groups.len()));
+        }
+    }
+
+    // 第二步：对每个前缀组，按修改时间排序，计算 hash 去重，重新编号
+    let mut rename_ops = Vec::new();
+    let mut duplicate_files = Vec::new();
+    let mut total_processed = 0;
+    let total_groups = prefix_groups.len();
+
+    for ((prefix, suffix), mut group_files) in prefix_groups {
+        // 按修改时间排序
+        group_files.sort_by_key(|f| {
+            f.metadata()
+                .and_then(|m| m.modified())
+                .ok()
+        });
+
+        // 计算 hash，去重
+        let mut seen_hashes = std::collections::HashSet::new();
+        let mut index = 0;
+
+        for file in group_files {
+            let hash = utils::calculate_file_hash(&file).await?;
+
+            if seen_hashes.contains(&hash) {
+                // 重复文件，标记删除
+                duplicate_files.push(file);
+                continue;
+            }
+            seen_hashes.insert(hash.clone());
+
+            // 生成新文件名：prefix_index 或 prefix_index.suffix
+            let new_name = if suffix.is_empty() {
+                format!("{}_{}", prefix, index)
+            } else {
+                format!("{}_{}{}", prefix, index, suffix)
+            };
+
+            rename_ops.push(RenameOperation {
+                old_path: file,
+                new_name,
+                hash,
+            });
+
+            index += 1;
+        }
+
+        total_processed += 1;
+        if let Some(callback) = progress {
+            let percent = 10 + ((total_processed * 40) / total_groups) as u8;
+            callback(percent, &format!("处理前缀: {}", prefix));
+        }
+    }
+
+    Ok((rename_ops, duplicate_files))
 }
 
-/// 原子性重命名并删除重复文件（两阶段提交）
-async fn atomic_rename_and_dedup(
+/// 执行重命名和删除操作
+async fn execute_renames_and_dedup(
     dir: &Path,
-    unique_files: &[PathBuf],
-    duplicate_files: &[PathBuf],
-    rename_map: &HashMap<String, String>,
+    rename_ops: Vec<RenameOperation>,
+    duplicate_files: Vec<PathBuf>,
     progress: &ProgressCallbackOption,
-    start_progress: u8,
-) -> anyhow::Result<()> {
-    let total_unique = unique_files.len();
+) -> anyhow::Result<HashMap<String, utils::FileMappingInfo>> {
+    let total_renames = rename_ops.len();
     let total_duplicates = duplicate_files.len();
-    // 每个唯一文件需要2次操作（重命名到临时+临时到最终），重复文件需要1次操作（删除）
-    let total_operations = total_unique * 2 + total_duplicates;
+    let total_operations = total_renames + total_duplicates;
 
     if total_operations == 0 {
         if let Some(callback) = progress {
             callback(100, "没有文件需要处理");
         }
-        return Ok(());
+        return Ok(HashMap::new());
     }
 
     let mut completed = 0;
-    let progress_range = 100 - start_progress;
+    let mut mapping = HashMap::new();
 
-    // Phase 1: 重命名唯一文件到临时文件（避免冲突）
-    let mut temp_mappings = Vec::new();
-
-    for (idx, file) in unique_files.iter().enumerate() {
-        let old_name = file.file_name().unwrap().to_str().unwrap();
-
-        if let Some(callback) = progress {
-            let percent = start_progress + ((completed * progress_range as usize) / total_operations) as u8;
-            callback(percent, &format!("准备重命名: {} ({}/{})", old_name, idx + 1, total_unique));
-        }
-
-        // 生成临时文件名
-        let temp_name = format!(".tmp_{}", old_name);
-        let temp_path = dir.join(&temp_name);
-
-        // 重命名到临时文件
-        fs::rename(file, &temp_path)
-            .await
-            .with_context(|| format!("重命名到临时文件失败: {} -> {}", file.display(), temp_path.display()))?;
-
-        temp_mappings.push((temp_path, rename_map.get(old_name).unwrap().clone()));
-        completed += 1;
-    }
-
-    // Phase 2: 从临时文件重命名到最终文件名
-    for (temp_path, new_name) in temp_mappings.iter() {
-        if let Some(callback) = progress {
-            let percent = start_progress + ((completed * progress_range as usize) / total_operations) as u8;
-            callback(percent, &format!("正在重命名: {}", new_name));
-        }
-
-        let final_path = dir.join(new_name);
-
-        fs::rename(temp_path, &final_path)
-            .await
-            .with_context(|| format!("重命名到最终文件失败: {} -> {}", temp_path.display(), final_path.display()))?;
-
-        completed += 1;
-    }
-
-    // Phase 3: 删除重复文件
+    // 第一步：删除重复文件
     for (idx, file) in duplicate_files.iter().enumerate() {
         let file_name = file.file_name().unwrap().to_str().unwrap();
 
         if let Some(callback) = progress {
-            let percent = start_progress + ((completed * progress_range as usize) / total_operations) as u8;
-            callback(percent, &format!("删除重复文件: {} ({}/{})", file_name, idx + 1, total_duplicates));
+            let percent = 50 + ((completed * 25) / total_operations) as u8;
+            callback(percent, &format!("删除重复: {} ({}/{})", file_name, idx + 1, total_duplicates));
         }
 
         fs::remove_file(file)
@@ -223,12 +201,42 @@ async fn atomic_rename_and_dedup(
         completed += 1;
     }
 
-    if let Some(callback) = progress {
-        callback(100, &format!("成功处理 {} 个文件（重命名: {}, 删除重复: {}）",
-            total_unique + total_duplicates, total_unique, total_duplicates));
+    // 第二步：执行重命名（直接重命名，不需要两阶段提交）
+    for (idx, op) in rename_ops.iter().enumerate() {
+        let old_name = op.old_path.file_name().unwrap().to_str().unwrap();
+
+        if let Some(callback) = progress {
+            let percent = 50 + ((completed * 50) / total_operations) as u8;
+            callback(percent, &format!("重命名: {} -> {} ({}/{})", old_name, op.new_name, idx + 1, total_renames));
+        }
+
+        let new_path = dir.join(&op.new_name);
+
+        // 如果新旧名字相同，跳过重命名
+        if op.old_path != new_path {
+            fs::rename(&op.old_path, &new_path)
+                .await
+                .with_context(|| format!("重命名失败: {} -> {}", op.old_path.display(), new_path.display()))?;
+
+            // 只记录真正发生重命名的文件
+            mapping.insert(
+                old_name.to_string(),
+                utils::FileMappingInfo {
+                    new_name: op.new_name.clone(),
+                    hash: op.hash.clone(),
+                },
+            );
+        }
+
+        completed += 1;
     }
 
-    Ok(())
+    if let Some(callback) = progress {
+        callback(100, &format!("成功处理 {} 个文件（重命名: {}, 删除重复: {}）",
+            total_renames + total_duplicates, total_renames, total_duplicates));
+    }
+
+    Ok(mapping)
 }
 
 impl CommandTrait for RenameSortCommand {
@@ -251,11 +259,8 @@ impl CommandTrait for RenameSortCommand {
             callback(0, "扫描文件中...");
         }
 
-        // 2. 加载旧映射表（用于保留原始文件名）
-        let old_mapping = utils::load_rename_mapping(dir_path).await;
-
-        // 3. 扫描并排序文件
-        let files = scan_and_sort(&dir, &self.params)?;
+        // 2. 扫描所有文件
+        let files = scan_files(&dir)?;
 
         if files.is_empty() {
             if let Some(callback) = progress {
@@ -264,32 +269,30 @@ impl CommandTrait for RenameSortCommand {
             return Ok(());
         }
 
-        // 报告开始计算文件 hash
+        // 报告开始处理
         if let Some(ref callback) = progress {
-            callback(5, &format!("分析 {} 个文件...", files.len()));
+            callback(5, &format!("发现 {} 个文件", files.len()));
         }
 
-        // 4. 生成重命名映射（包含文件 hash 去重，保留原始文件名）
-        let dedup_result = generate_mapping_with_dedup(dir_path, &files, &self.params, &old_mapping).await?;
+        // 3. 按前缀分组，生成重命名操作
+        let (rename_ops, duplicate_files) = group_and_generate_renames(dir_path, files, &progress).await?;
 
-        if dedup_result.duplicate_files.len() > 0 {
-            eprintln!("🔥 检测到 {} 个重复文件（相同内容），将自动删除", dedup_result.duplicate_files.len());
+        if duplicate_files.len() > 0 {
+            eprintln!("🔥 检测到 {} 个重复文件（相同内容），将自动删除", duplicate_files.len());
         }
 
-        // 5. 原子性重命名并删除重复文件
-        atomic_rename_and_dedup(
+        // 4. 执行重命名和删除
+        let mapping = execute_renames_and_dedup(
             dir_path,
-            &dedup_result.unique_files,
-            &dedup_result.duplicate_files,
-            &dedup_result.rename_map,
+            rename_ops,
+            duplicate_files,
             &progress,
-            10, // 从 10% 开始，前面已经用了 0-10%
         )
         .await?;
 
-        // 6. 保存映射表到目标目录（直接覆盖，不合并）
-        let mapping_file = dir_path.join("rename_mapping.json");
-        let json = serde_json::to_string_pretty(&dedup_result.mapping)?;
+        // 5. 保存映射表到目标目录（直接覆盖，不合并）
+        let mapping_file = dir_path.join(".rename_mapping");
+        let json = serde_json::to_string_pretty(&mapping)?;
         fs::write(&mapping_file, json).await?;
 
         Ok(())
@@ -309,14 +312,14 @@ impl CommandTrait for RenameSortCommand {
             return Ok(());
         }
 
-        // 2. 调用 install 重新扫描、排序、重命名 
+        // 2. 调用 install 重新扫描、排序、重命名
         self.install(params.clone(), progress, all_commands).await?;
 
         // 3. 检查是否还有文件，如果没有则删除映射表和空目录
-        let files = scan_and_sort(&dir, &self.params)?;
+        let files = scan_files(&dir)?;
         if files.is_empty() && dir_path.exists() {
             // 删除映射表
-            let mapping_file = dir_path.join("rename_mapping.json");
+            let mapping_file = dir_path.join(".rename_mapping");
             if mapping_file.exists() {
                 fs::remove_file(&mapping_file).await?;
             }

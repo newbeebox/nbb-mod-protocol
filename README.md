@@ -44,7 +44,7 @@
 ```
 
 - 参数：相对于游戏目录的路径列表
-- 卸载时自动查找 `rename_mapping.json` 获取重命名后的文件名
+- 卸载时自动查找 `.rename_mapping` 获取重命名后的文件名
 
 ### copy_to_home_dir - 复制到用户目录
 
@@ -60,19 +60,15 @@
 - 参数：相对于用户目录的路径列表
 - 卸载逻辑同 `copy_to_game_dir`
 
-### rename_sort - 批量重命名排序
+### rename_sort - 智能重命名排序
 
-按修改时间排序文件并重新编号，自动去重，生成映射表用于卸载。
+扫描目录中的文件，按**前缀分组**，智能累加索引避免冲突，自动去重。
 
 ```json
 {
   "method": "rename_sort",
   "params": {
-    "dir": "{{GameRootDir}}/Mods",
-    "pattern": "*.pak",
-    "format": "MyMod_{index}.pak",
-    "index_start": 1,
-    "index_padding": 2
+    "dir": "{{GameRootDir}}/Mods"
   }
 }
 ```
@@ -80,32 +76,40 @@
 **参数**：
 
 - `dir` - 目标目录（支持环境变量）
-- `pattern` - glob 模式，如 `*.pak`
-- `format` - 格式字符串，必须包含 `{index}` 占位符
-- `index_start` - 起始索引（可选，默认 1）
-- `index_padding` - 索引位数（可选，默认 2）
 
 **行为**：
 
-1. 扫描匹配文件，按修改时间排序
-2. 计算 SHA256 哈希，相同内容的文件只保留最早的，删除重复
-3. 原子性重命名（两阶段提交）
-4. 生成 `rename_mapping.json` 映射表到目标目录
+1. 扫描目录中的所有文件（仅第一层，不递归）
+2. **只处理包含 `_数字` 的文件**，不符合规范的文件保持原样
+3. 解析文件名格式：`prefix_index` 或 `prefix_index.suffix`
+   - 示例：`9ba626afa44a3aa3.patch_0` → 前缀=`9ba626afa44a3aa3.patch`，索引=`0`
+   - 示例：`9ba626afa44a3aa3.patch_0.stream` → 前缀=`9ba626afa44a3aa3.patch`，索引=`0`，后缀=`.stream`
+4. 按前缀分组，每组独立处理：
+   - 按**修改时间**排序（旧到新）
+   - 计算 SHA256 哈希，去重（相同内容只保留最早的文件）
+   - 重新编号为 `prefix_0`, `prefix_1`, `prefix_2`...
+5. 生成 `.rename_mapping` 映射表到目标目录
+6. 卸载时查找映射表删除文件，然后重新排序
+
+**命名规范**：
+
+| 原文件名 | 新文件名 | 说明 |
+|---------|---------|------|
+| `9ba626afa44a3aa3.patch_0` | `9ba626afa44a3aa3.patch_0` | 符合规范，前缀=`9ba626afa44a3aa3.patch`，索引=0 |
+| `9ba626afa44a3aa3.patch_1` | `9ba626afa44a3aa3.patch_1` | 前缀相同，索引=1 |
+| `9ba626afa44a3aa3.patch_0.stream` | `9ba626afa44a3aa3.patch_0.stream` | 带后缀 `.stream` |
+| `myfile.pak` | `myfile.pak` | ❌ 不符合规范（不包含 `_数字`），保持原样 |
 
 **映射表结构**：
 
 ```json
 {
-  "original_name.pak": {
-    "new_name": "MyMod_01.pak",
+  "9ba626afa44a3aa3.patch_0": {
+    "new_name": "9ba626afa44a3aa3.patch_0",
     "hash": "sha256..."
   }
 }
 ```
-
-- 重复文件的多个原始名映射到同一个新名
-- 卸载时 `copy_*` 命令自动查表，找到实际文件名并删除
-- 自动去重，同一文件只删除一次
 
 **示例**：
 
@@ -113,21 +117,16 @@
 [
   {
     "method": "copy_to_game_dir",
-    "params": ["Mods/a.pak", "Mods/b.pak"]
+    "params": ["Mods/mod_a.pak", "Mods/mod_b.pak"]
   },
   {
     "method": "rename_sort",
     "params": {
-      "dir": "{{GameRootDir}}/Mods",
-      "pattern": "*.pak",
-      "format": "MyMod_{index}.pak"
+      "dir": "{{GameRootDir}}/Mods"
     }
   }
 ]
 ```
-
-安装后：`a.pak` → `MyMod_01.pak`，`b.pak` → `MyMod_02.pak`
-卸载时：查表得知 `a.pak` 现在叫 `MyMod_01.pak`，正确删除
 
 ---
 

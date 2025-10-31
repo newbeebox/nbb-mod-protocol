@@ -148,10 +148,10 @@ pub async fn calculate_file_hash(file_path: &Path) -> anyhow::Result<String> {
 }
 
 /// 加载重命名映射表
-/// 从指定目录读取 rename_mapping.json
+/// 从指定目录读取 .rename_mapping
 /// 返回 original_name -> FileMappingInfo 的映射
 pub async fn load_rename_mapping(dir: &Path) -> HashMap<String, FileMappingInfo> {
-    let mapping_file = dir.join("rename_mapping.json");
+    let mapping_file = dir.join(".rename_mapping");
 
     if !mapping_file.exists() {
         return HashMap::new();
