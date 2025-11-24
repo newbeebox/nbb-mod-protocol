@@ -7,7 +7,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 impl CommandTrait for FileCopyToGameDirCommand {
-    async fn install(&self, params: CommandParams, progress: ProgressCallbackOption, _all_commands: &[Command]) -> anyhow::Result<()> {
+    async fn install(
+        &self,
+        params: CommandParams,
+        progress: ProgressCallbackOption,
+        _all_commands: &[Command],
+    ) -> anyhow::Result<()> {
         let game_dir = params.get_game_dir()?;
         let mod_dir = params.get_mod_dir()?;
         let mod_id = params.get_mod_id().await?;
@@ -24,11 +29,17 @@ impl CommandTrait for FileCopyToGameDirCommand {
         let mut dir_mappings = HashMap::new();
 
         for (index, (input, output)) in all_files.iter().enumerate() {
-            let file_name = input.file_name().and_then(|n| n.to_str()).unwrap_or("未知文件");
+            let file_name = input
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("未知文件");
 
             if let Some(ref callback) = progress {
                 let percent = ((index * 100) / total_files) as u8;
-                callback(percent, &format!("正在复制: {} ({}/{})", file_name, index + 1, total_files));
+                callback(
+                    percent,
+                    &format!("正在复制: {} ({}/{})", file_name, index + 1, total_files),
+                );
             }
 
             // 复制文件并记录映射
@@ -36,7 +47,10 @@ impl CommandTrait for FileCopyToGameDirCommand {
 
             if let Some(ref callback) = progress {
                 let percent = (((index + 1) * 100) / total_files) as u8;
-                callback(percent, &format!("已复制: {} ({}/{})", file_name, index + 1, total_files));
+                callback(
+                    percent,
+                    &format!("已复制: {} ({}/{})", file_name, index + 1, total_files),
+                );
             }
         }
 
@@ -44,24 +58,28 @@ impl CommandTrait for FileCopyToGameDirCommand {
         let affected_dirs: Vec<_> = dir_mappings.keys().cloned().collect();
         utils::merge_and_save_mappings(dir_mappings).await?;
 
-        // 整理受影响目录的编号文件
-        for dir in affected_dirs {
-            utils::reorder_numbered_files(&dir).await?;
-        }
-
         Ok(())
     }
 
-    async fn remove(&self, params: CommandParams, progress: ProgressCallbackOption, _all_commands: &[Command]) -> anyhow::Result<()> {
+    async fn remove(
+        &self,
+        params: CommandParams,
+        progress: ProgressCallbackOption,
+        _all_commands: &[Command],
+    ) -> anyhow::Result<()> {
         let game_dir = params.get_game_dir()?;
         let mod_id = params.get_mod_id().await?;
 
         // 预处理：构建路径信息列表（避免重复计算）
-        let path_infos: Vec<_> = self.params
+        let path_infos: Vec<_> = self
+            .params
             .iter()
             .map(|path_str| {
                 let path = Path::new(path_str);
-                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(path_str);
+                let file_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(path_str);
                 let parent = path.parent().unwrap_or(Path::new(""));
                 let target_dir = game_dir.join(parent);
                 (file_name, target_dir)
@@ -80,25 +98,28 @@ impl CommandTrait for FileCopyToGameDirCommand {
         }
 
         for (index, file_path) in files_to_remove.iter().enumerate() {
-            let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("未知文件");
+            let file_name = file_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("未知文件");
 
             if let Some(ref callback) = progress {
                 let percent = ((index * 100) / total_files) as u8;
-                callback(percent, &format!("正在删除: {} ({}/{})", file_name, index + 1, total_files));
+                callback(
+                    percent,
+                    &format!("正在删除: {} ({}/{})", file_name, index + 1, total_files),
+                );
             }
 
             utils::remove_file_and_folder(file_path).await?;
 
             if let Some(ref callback) = progress {
                 let percent = (((index + 1) * 100) / total_files) as u8;
-                callback(percent, &format!("已删除: {} ({}/{})", file_name, index + 1, total_files));
+                callback(
+                    percent,
+                    &format!("已删除: {} ({}/{})", file_name, index + 1, total_files),
+                );
             }
-        }
-
-        // 整理受影响目录的编号文件
-        let unique_dirs: std::collections::HashSet<_> = path_infos.iter().map(|(_, dir)| dir).collect();
-        for dir in unique_dirs {
-            utils::reorder_numbered_files(dir).await?;
         }
 
         Ok(())

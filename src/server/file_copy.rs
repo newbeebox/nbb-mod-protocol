@@ -1,13 +1,18 @@
 //! 复制文件命令
 
 use super::super::proto::*;
-use super::command_base::{CommandTrait, CommandParams, ProgressCallbackOption};
+use super::command_base::{CommandParams, CommandTrait, ProgressCallbackOption};
 use super::utils;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 impl CommandTrait for FileCopyCommand {
-    async fn install(&self, params: CommandParams, progress: ProgressCallbackOption, _all_commands: &[Command]) -> anyhow::Result<()> {
+    async fn install(
+        &self,
+        params: CommandParams,
+        progress: ProgressCallbackOption,
+        _all_commands: &[Command],
+    ) -> anyhow::Result<()> {
         let mod_dir = params.get_mod_dir()?;
         let mod_id = params.get_mod_id().await?;
 
@@ -42,18 +47,27 @@ impl CommandTrait for FileCopyCommand {
         let mut dir_mappings = HashMap::new();
 
         for (index, (input, output)) in all_files.iter().enumerate() {
-            let file_name = input.file_name().and_then(|n| n.to_str()).unwrap_or("未知文件");
+            let file_name = input
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("未知文件");
 
             if let Some(ref callback) = progress {
                 let percent = ((index * 100) / total_files) as u8;
-                callback(percent, &format!("正在复制: {} ({}/{})", file_name, index + 1, total_files));
+                callback(
+                    percent,
+                    &format!("正在复制: {} ({}/{})", file_name, index + 1, total_files),
+                );
             }
 
             utils::copy_and_record_mapping(input, output, &mod_id, &mut dir_mappings).await?;
 
             if let Some(ref callback) = progress {
                 let percent = (((index + 1) * 100) / total_files) as u8;
-                callback(percent, &format!("已复制: {} ({}/{})", file_name, index + 1, total_files));
+                callback(
+                    percent,
+                    &format!("已复制: {} ({}/{})", file_name, index + 1, total_files),
+                );
             }
         }
 
@@ -61,19 +75,20 @@ impl CommandTrait for FileCopyCommand {
         let affected_dirs: Vec<_> = dir_mappings.keys().cloned().collect();
         utils::merge_and_save_mappings(dir_mappings).await?;
 
-        // 整理受影响目录的编号文件
-        for dir in affected_dirs {
-            utils::reorder_numbered_files(&dir).await?;
-        }
-
         Ok(())
     }
 
-    async fn remove(&self, params: CommandParams, progress: ProgressCallbackOption, _all_commands: &[Command]) -> anyhow::Result<()> {
+    async fn remove(
+        &self,
+        params: CommandParams,
+        progress: ProgressCallbackOption,
+        _all_commands: &[Command],
+    ) -> anyhow::Result<()> {
         let mod_id = params.get_mod_id().await?;
 
         // 预处理：收集所有路径信息，创建临时存储以保持生命周期
-        let target_paths: Vec<_> = self.params
+        let target_paths: Vec<_> = self
+            .params
             .iter()
             .map(|item| {
                 PathBuf::from(utils::env_replace(&params.envs, &item.output).unwrap_or_default())
@@ -86,9 +101,13 @@ impl CommandTrait for FileCopyCommand {
                 let search_dir = if target_path.is_dir() {
                     target_path.clone()
                 } else {
-                    target_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+                    target_path
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("."))
                 };
-                let file_name = target_path.file_name()
+                let file_name = target_path
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("");
                 (file_name, search_dir)
@@ -106,25 +125,28 @@ impl CommandTrait for FileCopyCommand {
         }
 
         for (index, file_path) in files_to_remove.iter().enumerate() {
-            let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("未知文件");
+            let file_name = file_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("未知文件");
 
             if let Some(ref callback) = progress {
                 let percent = ((index * 100) / total_files) as u8;
-                callback(percent, &format!("正在删除: {} ({}/{})", file_name, index + 1, total_files));
+                callback(
+                    percent,
+                    &format!("正在删除: {} ({}/{})", file_name, index + 1, total_files),
+                );
             }
 
             utils::remove_file_and_folder(file_path).await?;
 
             if let Some(ref callback) = progress {
                 let percent = (((index + 1) * 100) / total_files) as u8;
-                callback(percent, &format!("已删除: {} ({}/{})", file_name, index + 1, total_files));
+                callback(
+                    percent,
+                    &format!("已删除: {} ({}/{})", file_name, index + 1, total_files),
+                );
             }
-        }
-
-        // 整理受影响目录的编号文件
-        let unique_dirs: std::collections::HashSet<_> = path_infos.iter().map(|(_, dir)| dir).collect();
-        for dir in unique_dirs {
-            utils::reorder_numbered_files(dir).await?;
         }
 
         Ok(())
