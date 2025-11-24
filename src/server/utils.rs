@@ -339,6 +339,7 @@ pub async fn save_rename_mapping(
 /// 智能识别文件名中的 _数字 模式，递增生成新文件名
 ///
 /// 示例：
+/// - `file.pak.patch_011.pak` → `file.pak.patch_012.pak`, `file.pak.patch_013.pak`, ...
 /// - `file.pak` → `file_0.pak`, `file_1.pak`, ...
 /// - `file_0.pak` → `file_1.pak`, `file_2.pak`, ...
 /// - `sm70_100_albm.tex.190820018` → `sm70_101_albm.tex.190820018`, `sm70_102_albm.tex.190820018`, ...
@@ -371,20 +372,22 @@ async fn find_next_available_name(target: &Path) -> anyhow::Result<PathBuf> {
         }
     }
 
-    let (base_name, suffix, start_num) = if let (Some(pos), Some(end)) = (last_digit_pos, last_digit_end) {
-        // 有 _数字 模式，提取基础名、当前数字、后缀
+    let (base_name, suffix, start_num, width) = if let (Some(pos), Some(end)) = (last_digit_pos, last_digit_end) {
+        // 有 _数字 模式，提取基础名、当前数字、后缀、原始宽度
         let base = &full_name[..pos];
-        let current_num: usize = full_name[pos + 1..end].parse().unwrap_or(0);
+        let digit_str = &full_name[pos + 1..end];
+        let current_num: usize = digit_str.parse().unwrap_or(0);
+        let original_width = digit_str.len();
         let suf = &full_name[end..];
-        (base, suf, current_num + 1)
+        (base, suf, current_num + 1, original_width)
     } else {
         // 没有 _数字 模式，在末尾添加 _0
-        (full_name, "", 0)
+        (full_name, "", 0, 1)
     };
 
     // 从 start_num 开始尝试
     for i in start_num..start_num + 1000 {
-        let new_name = format!("{}_{}{}", base_name, i, suffix);
+        let new_name = format!("{}_{:0width$}{}", base_name, i, suffix, width = width);
         let new_path = parent.join(&new_name);
         if !new_path.exists() {
             return Ok(new_path);
@@ -435,6 +438,158 @@ pub async fn copy_with_conflict_resolution(
     let new_target = find_next_available_name(target).await?;
     copy(&source.to_path_buf(), &new_target).await?;
     Ok(Some((new_target, original_name, true)))
+}
+
+/// 文件编号信息
+#[derive(Debug)]
+struct NumberedFileInfo {
+    path: PathBuf,
+    base_name: String,
+    number: usize,
+    suffix: String,
+    width: usize,
+}
+
+/// 解析文件名中的编号信息（识别 _数字 模式）
+/// 返回：(base_name, number, suffix, width)
+fn parse_numbered_filename(full_name: &str) -> Option<(String, usize, String, usize)> {
+    let chars: Vec<char> = full_name.chars().collect();
+    let mut last_digit_pos = None;
+    let mut last_digit_end = None;
+
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '_' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
+            let start = i;
+            i += 1;
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+            last_digit_pos = Some(start);
+            last_digit_end = Some(i);
+        } else {
+            i += 1;
+        }
+    }
+
+    if let (Some(pos), Some(end)) = (last_digit_pos, last_digit_end) {
+        let base = &full_name[..pos];
+        let digit_str = &full_name[pos + 1..end];
+        let number: usize = digit_str.parse().ok()?;
+        let width = digit_str.len();
+        let suffix = &full_name[end..];
+        Some((base.to_string(), number, suffix.to_string(), width))
+    } else {
+        None
+    }
+}
+
+/// 整理目录下的编号文件，消除数字间隙
+///
+/// 逻辑：
+/// 1. 扫描目录，找到所有 xxx_数字.后缀 格式的文件
+/// 2. 按 (base_name, suffix) 分组
+/// 3. 对每组按数字排序，检查是否连续
+/// 4. 如果有间隙，重新编号为连续序列
+///
+/// 示例：
+/// - 卸载前：file_11, file_13, file_15
+/// - 卸载后：file_11, file_12, file_13
+pub async fn reorder_numbered_files(dir: &Path) -> anyhow::Result<()> {
+    if !dir.exists() || !dir.is_dir() {
+        return Ok(());
+    }
+
+    // 1. 扫描目录（只扫描一层）
+    let mut entries = fs::read_dir(dir).await?;
+    let mut files = Vec::new();
+
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                // 跳过映射文件
+                if file_name == ".nbmod_mapping" {
+                    continue;
+                }
+
+                if let Some((base, num, suffix, width)) = parse_numbered_filename(file_name) {
+                    files.push(NumberedFileInfo {
+                        path: path.clone(),
+                        base_name: base,
+                        number: num,
+                        suffix,
+                        width,
+                    });
+                }
+            }
+        }
+    }
+
+    if files.is_empty() {
+        return Ok(());
+    }
+
+    // 2. 按 (base_name, suffix) 分组
+    let mut groups: HashMap<(String, String), Vec<NumberedFileInfo>> = HashMap::new();
+    for file in files {
+        groups
+            .entry((file.base_name.clone(), file.suffix.clone()))
+            .or_default()
+            .push(file);
+    }
+
+    // 3. 对每组重新编号
+    for ((base, suffix), mut group) in groups {
+        if group.len() <= 1 {
+            continue;
+        }
+
+        // 按数字排序
+        group.sort_by_key(|f| f.number);
+
+        // 检查是否连续
+        let start_num = group[0].number;
+        let width = group[0].width;
+
+        let needs_reorder = group
+            .iter()
+            .enumerate()
+            .any(|(i, f)| f.number != start_num + i);
+
+        if !needs_reorder {
+            continue;
+        }
+
+        // 执行重新编号：先重命名为临时名，再重命名为最终名
+        let mut temp_paths = Vec::new();
+
+        for (i, file) in group.iter().enumerate() {
+            let expected_num = start_num + i;
+            if file.number != expected_num {
+                // 临时名：原文件名 + .reordering
+                let temp_name = format!(
+                    "{}_{:0width$}{}.reordering",
+                    base,
+                    file.number,
+                    suffix,
+                    width = width
+                );
+                let temp_path = dir.join(&temp_name);
+                fs::rename(&file.path, &temp_path).await?;
+                temp_paths.push((temp_path, expected_num));
+            }
+        }
+
+        // 重命名为最终名
+        for (temp_path, new_num) in temp_paths {
+            let new_name = format!("{}_{:0width$}{}", base, new_num, suffix, width = width);
+            let new_path = dir.join(&new_name);
+            fs::rename(&temp_path, &new_path).await?;
+        }
+    }
+
+    Ok(())
 }
 
 

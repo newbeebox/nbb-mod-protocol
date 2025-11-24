@@ -38,7 +38,15 @@ impl CommandTrait for FileCopyToHomeDirCommand {
         }
 
         // 合并并保存所有映射表
-        utils::merge_and_save_mappings(dir_mappings).await
+        let affected_dirs: Vec<_> = dir_mappings.keys().cloned().collect();
+        utils::merge_and_save_mappings(dir_mappings).await?;
+
+        // 整理受影响目录的编号文件
+        for dir in affected_dirs {
+            utils::reorder_numbered_files(&dir).await?;
+        }
+
+        Ok(())
     }
 
     async fn remove(&self, params: CommandParams, progress: ProgressCallbackOption, _all_commands: &[Command]) -> anyhow::Result<()> {
@@ -80,6 +88,12 @@ impl CommandTrait for FileCopyToHomeDirCommand {
                 let percent = (((index + 1) * 100) / total_files) as u8;
                 callback(percent, &format!("已从用户目录删除: {} ({}/{})", file_name, index + 1, total_files));
             }
+        }
+
+        // 整理受影响目录的编号文件
+        let unique_dirs: std::collections::HashSet<_> = path_infos.iter().map(|(_, dir)| dir).collect();
+        for dir in unique_dirs {
+            utils::reorder_numbered_files(dir).await?;
         }
 
         Ok(())
