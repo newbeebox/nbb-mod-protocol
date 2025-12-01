@@ -338,9 +338,10 @@ pub async fn save_rename_mapping(
 /// 查找下一个可用的文件名（处理重名冲突）
 /// 智能识别文件名中的 _数字 模式，递增生成新文件名
 ///
+/// 注意：此函数仅用于已有 _数字 模式的文件
+///
 /// 示例：
 /// - `file.pak.patch_011.pak` → `file.pak.patch_012.pak`, `file.pak.patch_013.pak`, ...
-/// - `file.pak` → `file_0.pak`, `file_1.pak`, ...
 /// - `file_0.pak` → `file_1.pak`, `file_2.pak`, ...
 /// - `sm70_100_albm.tex.190820018` → `sm70_101_albm.tex.190820018`, `sm70_102_albm.tex.190820018`, ...
 async fn find_next_available_name(target: &Path) -> anyhow::Result<PathBuf> {
@@ -372,18 +373,17 @@ async fn find_next_available_name(target: &Path) -> anyhow::Result<PathBuf> {
         }
     }
 
-    let (base_name, suffix, start_num, width) = if let (Some(pos), Some(end)) = (last_digit_pos, last_digit_end) {
-        // 有 _数字 模式，提取基础名、当前数字、后缀、原始宽度
-        let base = &full_name[..pos];
-        let digit_str = &full_name[pos + 1..end];
-        let current_num: usize = digit_str.parse().unwrap_or(0);
-        let original_width = digit_str.len();
-        let suf = &full_name[end..];
-        (base, suf, current_num + 1, original_width)
-    } else {
-        // 没有 _数字 模式，在末尾添加 _0
-        (full_name, "", 0, 1)
+    // 调用方保证文件名已有 _数字 模式
+    let (Some(pos), Some(end)) = (last_digit_pos, last_digit_end) else {
+        return Err(anyhow!("文件名不包含 _数字 模式: {}", full_name));
     };
+
+    let base_name = &full_name[..pos];
+    let digit_str = &full_name[pos + 1..end];
+    let current_num: usize = digit_str.parse().unwrap_or(0);
+    let width = digit_str.len();
+    let suffix = &full_name[end..];
+    let start_num = current_num + 1;
 
     // 从 start_num 开始尝试
     for i in start_num..start_num + 1000 {
@@ -434,10 +434,17 @@ pub async fn copy_with_conflict_resolution(
         return Ok(None); // 相同文件，跳过
     }
 
-    // 不同文件，需要重命名
-    let new_target = find_next_available_name(target).await?;
-    copy(&source.to_path_buf(), &new_target).await?;
-    Ok(Some((new_target, original_name, true)))
+    // 不同文件，检查是否有 _数字 模式
+    if parse_numbered_filename(&original_name).is_some() {
+        // 有 _数字 模式，重命名后复制
+        let new_target = find_next_available_name(target).await?;
+        copy(&source.to_path_buf(), &new_target).await?;
+        Ok(Some((new_target, original_name, true)))
+    } else {
+        // 没有 _数字 模式，直接覆盖原文件
+        copy(&source.to_path_buf(), &target.to_path_buf()).await?;
+        Ok(Some((target.to_path_buf(), original_name, false)))
+    }
 }
 
 /// 文件编号信息
