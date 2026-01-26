@@ -202,3 +202,27 @@ pub fn collect_files_with_mapping(
 ) -> anyhow::Result<Vec<(PathBuf, PathBuf)>> {
     collect_files_with_targets(items, source_dir, target_dir)
 }
+
+/// 收集目标目录中存在的文件（用于卸载，不需要源目录）
+/// 根据 params 中的相对路径，在目标目录中查找实际存在的文件
+/// 返回: Vec<PathBuf> - 目标文件路径列表
+pub fn collect_target_files(items: &[String], target_dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+
+    for item in items {
+        let target_path = target_dir.join(item);
+
+        if target_path.is_file() {
+            files.push(target_path);
+        } else if target_path.is_dir() {
+            // 递归收集目录中的所有文件
+            for entry in WalkDir::new(&target_path).into_iter().flatten() {
+                if entry.path().is_file() {
+                    files.push(entry.path().to_path_buf());
+                }
+            }
+        }
+    }
+
+    files
+}

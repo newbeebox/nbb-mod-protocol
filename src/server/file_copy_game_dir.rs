@@ -58,10 +58,9 @@ impl CommandTrait for FileCopyToGameDirCommand {
         _all_commands: &[Command],
     ) -> anyhow::Result<()> {
         let game_dir = params.get_game_dir()?;
-        let mod_dir = params.get_mod_dir()?;
 
-        // 根据命令参数计算目标文件路径
-        let all_files = utils::collect_files_with_mapping(&self.params, &mod_dir, &game_dir)?;
+        // 根据命令参数在目标目录中查找文件（不需要 mod_dir）
+        let all_files = utils::collect_target_files(&self.params, &game_dir);
         let total_files = all_files.len();
         if total_files == 0 {
             if let Some(ref callback) = progress {
@@ -70,8 +69,8 @@ impl CommandTrait for FileCopyToGameDirCommand {
             return Ok(());
         }
 
-        for (index, (_input, output)) in all_files.iter().enumerate() {
-            let file_name = output
+        for (index, file_path) in all_files.iter().enumerate() {
+            let file_name = file_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("未知文件");
@@ -84,7 +83,7 @@ impl CommandTrait for FileCopyToGameDirCommand {
                 );
             }
 
-            utils::remove_file_and_folder(output).await?;
+            utils::remove_file_and_folder(file_path).await?;
 
             if let Some(ref callback) = progress {
                 let percent = (((index + 1) * 100) / total_files) as u8;

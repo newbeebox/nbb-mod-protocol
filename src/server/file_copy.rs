@@ -5,7 +5,7 @@ use super::command_base::{CommandParams, CommandTrait, ProgressCallbackOption};
 use super::utils;
 use std::path::{Path, PathBuf};
 
-/// 收集所有文件的源路径和目标路径
+/// 收集所有文件的源路径和目标路径（安装时使用）
 fn collect_all_files(
     cmd_params: &[FileCopyParam],
     mod_dir: &Path,
@@ -31,6 +31,30 @@ fn collect_all_files(
         }
     }
     Ok(all_files)
+}
+
+/// 收集目标文件路径（卸载时使用，不需要 mod_dir）
+fn collect_target_files_for_remove(
+    cmd_params: &[FileCopyParam],
+    envs: &ModEnvMap,
+) -> anyhow::Result<Vec<PathBuf>> {
+    use walkdir::WalkDir;
+
+    let mut files = Vec::new();
+    for item in cmd_params.iter() {
+        let target_path = PathBuf::from(utils::env_replace(envs, &item.output)?);
+
+        if target_path.is_file() {
+            files.push(target_path);
+        } else if target_path.is_dir() {
+            for entry in WalkDir::new(&target_path).into_iter().flatten() {
+                if entry.path().is_file() {
+                    files.push(entry.path().to_path_buf());
+                }
+            }
+        }
+    }
+    Ok(files)
 }
 
 impl CommandTrait for FileCopyCommand {
@@ -85,10 +109,8 @@ impl CommandTrait for FileCopyCommand {
         progress: ProgressCallbackOption,
         _all_commands: &[Command],
     ) -> anyhow::Result<()> {
-        let mod_dir = params.get_mod_dir()?;
-
-        // 根据命令参数计算目标文件路径
-        let all_files = collect_all_files(&self.params, &mod_dir, &params.envs)?;
+        // 根据命令参数在目标目录中查找文件（不需要 mod_dir）
+        let all_files = collect_target_files_for_remove(&self.params, &params.envs)?;
         let total_files = all_files.len();
         if total_files == 0 {
             if let Some(ref callback) = progress {
@@ -97,8 +119,8 @@ impl CommandTrait for FileCopyCommand {
             return Ok(());
         }
 
-        for (index, (_input, output)) in all_files.iter().enumerate() {
-            let file_name = output
+        for (index, file_path) in all_files.iter().enumerate() {
+            let file_name = file_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("未知文件");
@@ -111,7 +133,7 @@ impl CommandTrait for FileCopyCommand {
                 );
             }
 
-            utils::remove_file_and_folder(output).await?;
+            utils::remove_file_and_folder(file_path).await?;
 
             if let Some(ref callback) = progress {
                 let percent = (((index + 1) * 100) / total_files) as u8;
