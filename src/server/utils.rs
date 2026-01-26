@@ -112,23 +112,8 @@ fn find_next_available_name(path: &Path) -> PathBuf {
             next_num += 1;
         }
     } else {
-        // 没有 _数字 模式，添加 _1 后缀
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let ext = path.extension().and_then(|s| s.to_str());
-
-        let mut counter = 1u64;
-        loop {
-            let new_name = if let Some(e) = ext {
-                format!("{}_{}.{}", stem, counter, e)
-            } else {
-                format!("{}_{}", stem, counter)
-            };
-            let new_path = parent.join(&new_name);
-            if !new_path.exists() {
-                return new_path;
-            }
-            counter += 1;
-        }
+        // 没有 _数字 模式，直接覆盖
+        path.to_path_buf()
     }
 }
 
