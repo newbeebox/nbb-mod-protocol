@@ -3,8 +3,35 @@
 use super::super::proto::*;
 use super::command_base::{CommandParams, CommandTrait, ProgressCallbackOption};
 use super::utils;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+/// 收集所有文件的源路径和目标路径
+fn collect_all_files(
+    cmd_params: &[FileCopyParam],
+    mod_dir: &Path,
+    envs: &ModEnvMap,
+) -> anyhow::Result<Vec<(PathBuf, PathBuf)>> {
+    let mut all_files = Vec::new();
+    for item in cmd_params.iter() {
+        let source_path = mod_dir.join(&item.input);
+        let target_path = PathBuf::from(utils::env_replace(envs, &item.output)?);
+
+        let files = utils::collect_files(&source_path, Some(mod_dir))?;
+        for (source, _relative) in files {
+            let target = if let Ok(rel) = source.strip_prefix(&source_path) {
+                if rel.as_os_str().is_empty() {
+                    target_path.clone()
+                } else {
+                    target_path.join(rel)
+                }
+            } else {
+                target_path.clone()
+            };
+            all_files.push((source, target));
+        }
+    }
+    Ok(all_files)
+}
 
 impl CommandTrait for FileCopyCommand {
     async fn install(
@@ -14,28 +41,8 @@ impl CommandTrait for FileCopyCommand {
         _all_commands: &[Command],
     ) -> anyhow::Result<()> {
         let mod_dir = params.get_mod_dir()?;
-        let mod_id = params.get_mod_id().await?;
 
-        let mut all_files = Vec::new();
-        for item in self.params.iter() {
-            let source_path = mod_dir.join(&item.input);
-            let target_path = PathBuf::from(utils::env_replace(&params.envs, &item.output)?);
-
-            let files = utils::collect_files(&source_path, Some(&mod_dir))?;
-            for (source, _relative) in files {
-                let target = if let Ok(rel) = source.strip_prefix(&source_path) {
-                    if rel.as_os_str().is_empty() {
-                        target_path.clone()
-                    } else {
-                        target_path.join(rel)
-                    }
-                } else {
-                    target_path.clone()
-                };
-                all_files.push((source, target));
-            }
-        }
-
+        let all_files = collect_all_files(&self.params, &mod_dir, &params.envs)?;
         let total_files = all_files.len();
         if total_files == 0 {
             if let Some(ref callback) = progress {
@@ -43,8 +50,6 @@ impl CommandTrait for FileCopyCommand {
             }
             return Ok(());
         }
-
-        let mut dir_mappings = HashMap::new();
 
         for (index, (input, output)) in all_files.iter().enumerate() {
             let file_name = input
@@ -60,7 +65,7 @@ impl CommandTrait for FileCopyCommand {
                 );
             }
 
-            utils::copy_and_record_mapping(input, output, &mod_id, &mut dir_mappings).await?;
+            utils::copy_file(input, output).await?;
 
             if let Some(ref callback) = progress {
                 let percent = (((index + 1) * 100) / total_files) as u8;
@@ -71,10 +76,6 @@ impl CommandTrait for FileCopyCommand {
             }
         }
 
-        // 合并并保存所有映射表
-        let affected_dirs: Vec<_> = dir_mappings.keys().cloned().collect();
-        utils::merge_and_save_mappings(dir_mappings).await?;
-
         Ok(())
     }
 
@@ -84,39 +85,11 @@ impl CommandTrait for FileCopyCommand {
         progress: ProgressCallbackOption,
         _all_commands: &[Command],
     ) -> anyhow::Result<()> {
-        let mod_id = params.get_mod_id().await?;
+        let mod_dir = params.get_mod_dir()?;
 
-        // 预处理：收集所有路径信息，创建临时存储以保持生命周期
-        let target_paths: Vec<_> = self
-            .params
-            .iter()
-            .map(|item| {
-                PathBuf::from(utils::env_replace(&params.envs, &item.output).unwrap_or_default())
-            })
-            .collect();
-
-        let path_infos: Vec<_> = target_paths
-            .iter()
-            .map(|target_path| {
-                let search_dir = if target_path.is_dir() {
-                    target_path.clone()
-                } else {
-                    target_path
-                        .parent()
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_else(|| PathBuf::from("."))
-                };
-                let file_name = target_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
-                (file_name, search_dir)
-            })
-            .collect();
-
-        let files_to_remove = utils::process_removal_mappings(&path_infos, &mod_id).await?;
-
-        let total_files = files_to_remove.len();
+        // 根据命令参数计算目标文件路径
+        let all_files = collect_all_files(&self.params, &mod_dir, &params.envs)?;
+        let total_files = all_files.len();
         if total_files == 0 {
             if let Some(ref callback) = progress {
                 callback(100, "没有文件需要删除");
@@ -124,8 +97,8 @@ impl CommandTrait for FileCopyCommand {
             return Ok(());
         }
 
-        for (index, file_path) in files_to_remove.iter().enumerate() {
-            let file_name = file_path
+        for (index, (_input, output)) in all_files.iter().enumerate() {
+            let file_name = output
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("未知文件");
@@ -138,7 +111,7 @@ impl CommandTrait for FileCopyCommand {
                 );
             }
 
-            utils::remove_file_and_folder(file_path).await?;
+            utils::remove_file_and_folder(output).await?;
 
             if let Some(ref callback) = progress {
                 let percent = (((index + 1) * 100) / total_files) as u8;

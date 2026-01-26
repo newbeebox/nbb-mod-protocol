@@ -3,8 +3,6 @@
 use crate::server::command_base::{CommandTrait, ProgressCallbackOption};
 use crate::server::utils;
 use crate::*;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 
 impl CommandTrait for FileCopyToGameDirCommand {
     async fn install(
@@ -15,7 +13,6 @@ impl CommandTrait for FileCopyToGameDirCommand {
     ) -> anyhow::Result<()> {
         let game_dir = params.get_game_dir()?;
         let mod_dir = params.get_mod_dir()?;
-        let mod_id = params.get_mod_id().await?;
 
         let all_files = utils::collect_files_with_mapping(&self.params, &mod_dir, &game_dir)?;
         let total_files = all_files.len();
@@ -25,8 +22,6 @@ impl CommandTrait for FileCopyToGameDirCommand {
             }
             return Ok(());
         }
-
-        let mut dir_mappings = HashMap::new();
 
         for (index, (input, output)) in all_files.iter().enumerate() {
             let file_name = input
@@ -42,8 +37,7 @@ impl CommandTrait for FileCopyToGameDirCommand {
                 );
             }
 
-            // 复制文件并记录映射
-            utils::copy_and_record_mapping(input, output, &mod_id, &mut dir_mappings).await?;
+            utils::copy_file(input, output).await?;
 
             if let Some(ref callback) = progress {
                 let percent = (((index + 1) * 100) / total_files) as u8;
@@ -53,10 +47,6 @@ impl CommandTrait for FileCopyToGameDirCommand {
                 );
             }
         }
-
-        // 合并并保存所有映射表
-        let affected_dirs: Vec<_> = dir_mappings.keys().cloned().collect();
-        utils::merge_and_save_mappings(dir_mappings).await?;
 
         Ok(())
     }
@@ -68,28 +58,11 @@ impl CommandTrait for FileCopyToGameDirCommand {
         _all_commands: &[Command],
     ) -> anyhow::Result<()> {
         let game_dir = params.get_game_dir()?;
-        let mod_id = params.get_mod_id().await?;
+        let mod_dir = params.get_mod_dir()?;
 
-        // 预处理：构建路径信息列表（避免重复计算）
-        let path_infos: Vec<_> = self
-            .params
-            .iter()
-            .map(|path_str| {
-                let path = Path::new(path_str);
-                let file_name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(path_str);
-                let parent = path.parent().unwrap_or(Path::new(""));
-                let target_dir = game_dir.join(parent);
-                (file_name, target_dir)
-            })
-            .collect();
-
-        let files_to_remove = utils::process_removal_mappings(&path_infos, &mod_id).await?;
-
-        // 删除文件
-        let total_files = files_to_remove.len();
+        // 根据命令参数计算目标文件路径
+        let all_files = utils::collect_files_with_mapping(&self.params, &mod_dir, &game_dir)?;
+        let total_files = all_files.len();
         if total_files == 0 {
             if let Some(ref callback) = progress {
                 callback(100, "没有文件需要删除");
@@ -97,8 +70,8 @@ impl CommandTrait for FileCopyToGameDirCommand {
             return Ok(());
         }
 
-        for (index, file_path) in files_to_remove.iter().enumerate() {
-            let file_name = file_path
+        for (index, (_input, output)) in all_files.iter().enumerate() {
+            let file_name = output
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("未知文件");
@@ -111,7 +84,7 @@ impl CommandTrait for FileCopyToGameDirCommand {
                 );
             }
 
-            utils::remove_file_and_folder(file_path).await?;
+            utils::remove_file_and_folder(output).await?;
 
             if let Some(ref callback) = progress {
                 let percent = (((index + 1) * 100) / total_files) as u8;

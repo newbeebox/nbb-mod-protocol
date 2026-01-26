@@ -33,12 +33,12 @@ pub struct CommandParams {
     pub mod_id: Option<String>,
 }
 
-impl Into<CommandParams> for CommandExecuteParams {
-    fn into(self) -> CommandParams {
+impl From<CommandExecuteParams> for CommandParams {
+    fn from(val: CommandExecuteParams) -> Self {
         CommandParams {
-            envs: self.envs.clone(),
-            mod_dir: self.mod_dir.clone(),
-            mod_id: self.mod_id.clone(),
+            envs: val.envs.clone(),
+            mod_dir: val.mod_dir.clone(),
+            mod_id: val.mod_id.clone(),
         }
     }
 }

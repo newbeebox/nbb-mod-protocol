@@ -25,6 +25,12 @@ pub struct ModEnvMap {
     inner: HashMap<ModEnvKey, String>,
 }
 
+impl Default for ModEnvMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModEnvMap {
     pub fn new() -> Self {
         let mut env = Self {
